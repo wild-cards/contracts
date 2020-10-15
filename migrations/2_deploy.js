@@ -44,7 +44,7 @@ async function deploy(options, accounts) {
   console.log("6");
 }
 
-module.exports = function (deployer, networkName, accounts) {
+module.exports = function(deployer, networkName, accounts) {
   deployer.then(async () => {
     // Don't try to deploy/migrate the contracts for tests
     if (networkName === "test") {

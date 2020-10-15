@@ -777,8 +777,6 @@ contract WildcardSteward_v3_matic is Initializable, BasicMetaTransaction {
     }
 
     function depositWithPermit(
-        address holder,
-        address spender,
         uint256 nonce,
         uint256 expiry,
         bool allowed,
@@ -788,7 +786,16 @@ contract WildcardSteward_v3_matic is Initializable, BasicMetaTransaction {
         address patron,
         uint256 amount
     ) external {
-        paymentToken.permit(holder, spender, nonce, expiry, allowed, v, r, s);
+        paymentToken.permit(
+            msgSender(),
+            address(this),
+            nonce,
+            expiry,
+            allowed,
+            v,
+            r,
+            s
+        );
         depositWeiPatron(patron, amount);
     }
 
