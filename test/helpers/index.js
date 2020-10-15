@@ -1,12 +1,13 @@
 const { BN } = require("@openzeppelin/test-helpers");
-const { time } = require("@openzeppelin/test-helpers");
+const { time, ether } = require("@openzeppelin/test-helpers");
 
 const { promisify } = require("util");
+const { signDaiPermit } = require("eth-permit");
 
 const NUM_SECONDS_IN_YEAR = "31536000";
-const STEWARD_CONTRACT_NAME = "./WildcardSteward_v3.sol";
+const STEWARD_CONTRACT_NAME = "./WildcardSteward_v3_matic.sol";
 const ERC721_CONTRACT_NAME = "./ERC721Patronage_v1.sol";
-const ERC20_CONTRACT_NAME = "./ERC20PatronageReceipt_v2.sol";
+const ERC20_CONTRACT_NAME = "./ERC20PatronageReceipt_v2_upgradable.sol";
 const MINT_MANAGER_CONTRACT_NAME = "./MintManager_v2.sol";
 const SENT_ATTACKER_CONTRACT_NAME = "./tests/SendBlockAttacker.sol";
 const abi = require("ethereumjs-abi");
@@ -17,6 +18,7 @@ const ERC721token = artifacts.require(ERC721_CONTRACT_NAME);
 const WildcardSteward = artifacts.require(STEWARD_CONTRACT_NAME);
 const ERC20token = artifacts.require(ERC20_CONTRACT_NAME);
 const MintManager = artifacts.require(MINT_MANAGER_CONTRACT_NAME);
+const Dai = artifacts.require("./Dai.sol");
 
 const launchTokens = async (steward, tokenParameters) => {
   return await steward.listNewTokens(
@@ -28,18 +30,31 @@ const launchTokens = async (steward, tokenParameters) => {
     tokenParameters.map((item) => item.releaseDate)
   );
 };
+
 const initialize = async (
   admin,
   withdrawCheckerAdmin,
   auctionStartPrice,
   auctionEndPrice,
   auctionLength,
-  tokenParameters
+  tokenParameters,
+  accountsToMintPaymentTokensFor = [],
+  approveDai = true
 ) => {
   const erc721 = await ERC721token.new({ from: admin });
   const steward = await WildcardSteward.new({ from: admin });
   const mintManager = await MintManager.new({ from: admin });
-  const erc20 = await ERC20token.new("Wildcards Loyalty Token", "WLT", 18, {
+  const erc20 = await ERC20token.new({
+    from: admin,
+  });
+  await erc20.setup(
+    "Wildcards Loyalty Token",
+    "WLT",
+    mintManager.address,
+    admin
+  );
+  const networkId = 31337; // This is the default networkId used by buidler - BE CAREFUL, might cause issues with other test runners?
+  const paymentToken = await Dai.new(networkId, {
     from: admin,
   });
   await mintManager.initialize(admin, steward.address, erc20.address, {
@@ -53,11 +68,22 @@ const initialize = async (
     steward.address,
     "ALWAYSFORSALETestToken",
     "AFSTT",
+    steward.address,
     admin,
     { from: admin }
   );
-  await erc721.addMinter(steward.address, { from: admin });
-  await erc721.renounceMinter({ from: admin });
+  await Promise.all(
+    accountsToMintPaymentTokensFor.map(async (account) => {
+      await paymentToken.mint(account, ether("100"));
+      if (approveDai) {
+        await paymentToken.approve(steward.address, ether("50"), {
+          from: account,
+        });
+      }
+    })
+  );
+  // await erc721.addMinter(steward.address, { from: admin });
+  // await erc721.renounceMinter({ from: admin });
   // TODO: use this to make the contract address of the token deturministic: https://ethereum.stackexchange.com/a/46960/4642
   // address _assetToken,
   // address _admin,
@@ -73,7 +99,8 @@ const initialize = async (
     withdrawCheckerAdmin,
     auctionStartPrice,
     auctionEndPrice,
-    auctionLength
+    auctionLength,
+    paymentToken.address
   );
 
   await launchTokens(steward, tokenParameters);
@@ -83,6 +110,7 @@ const initialize = async (
     steward,
     mintManager,
     erc20,
+    paymentToken,
   };
 };
 
@@ -154,12 +182,13 @@ const withdrawBenefactorFundsAll = async (
   expiry,
   from
 ) => {
+  const randomNonce = Math.floor(Math.random() * 10000000);
   const hash =
     "0x" +
     abi
       .soliditySHA3(
-        ["address", "uint256", "uint256"],
-        [benefactor, maxAmount, expiry]
+        ["address", "uint256", "uint256", "uint256"],
+        [benefactor, maxAmount, expiry, randomNonce]
       )
       .toString("hex");
 
@@ -184,11 +213,11 @@ const withdrawBenefactorFundsAll = async (
   //   sigDecoded.s
   // );
   // const recoveredAddress = ethUtil.pubToAddress(recoveredPub).toString("hex");
-
   return await steward.withdrawBenefactorFundsToValidated(
     benefactor,
     maxAmount,
     expiry,
+    randomNonce,
     prefixedHash,
     v,
     r,
@@ -198,6 +227,25 @@ const withdrawBenefactorFundsAll = async (
       gasPrice: "0", // Set gas price to 0 for simplicity
     }
   );
+};
+
+const daiPermitGeneration = async (
+  provider,
+  daiContract,
+  holder,
+  spender,
+  // nonce,
+  expiry = Number.MAX_SAFE_INTEGER
+) => {
+  const result = await signDaiPermit(
+    provider,
+    daiContract.address,
+    holder,
+    spender,
+    expiry
+  );
+
+  return result;
 };
 
 module.exports = {
@@ -213,6 +261,7 @@ module.exports = {
   globalTokenGenerationRate,
   isCoverage,
   waitTillBeginningOfSecond,
+  daiPermitGeneration,
   //patronage per token = price * amountOfTime * patronageNumerator/ patronageDenominator / 365 days;
   multiPatronageCalculator: () => (timeInSeconds, tokenArray) => {
     const totalPatronage = tokenArray.reduce(
